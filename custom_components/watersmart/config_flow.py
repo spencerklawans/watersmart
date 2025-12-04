@@ -14,7 +14,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import voluptuous as vol
 
 from .client import AuthenticationError, WaterSmartClient
-from .const import DOMAIN
+from .const import DOMAIN, IMAP_VERIFICATION_WAIT_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,10 +27,24 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 )
 
 
-async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
+ACCOUNT_LOOKUP_TIMEOUT_SECONDS = IMAP_VERIFICATION_WAIT_SECONDS + 60
+
+
+async def validate_input(
+    hass: HomeAssistant,
+    data: dict[str, Any],
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     """Validate the user input allows us to connect.
 
     Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
+
+    Args:
+        hass: Home Assistant instance.
+        data: User provided input from the config flow.
+        timeout_seconds: Optional override for the account lookup timeout. Defaults
+            to a value comfortably longer than the IMAP verification wait so that
+            the auth flow does not prematurely fail as a connection issue.
 
     Returns:
         The details for creating a new config entry.
@@ -41,12 +55,13 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     """
 
     session = async_get_clientsession(hass)
+    account_lookup_timeout = timeout_seconds or ACCOUNT_LOOKUP_TIMEOUT_SECONDS
     client = WaterSmartClient(
         data[CONF_HOST], data[CONF_USERNAME], data[CONF_PASSWORD], session=session
     )
 
     try:
-        async with timeout(30):
+        async with timeout(account_lookup_timeout):
             account_number = await client.async_get_account_number()
     except (ClientConnectorError, TimeoutError, ClientError) as error:
         raise CannotConnect from error
