@@ -80,6 +80,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     except (ClientConnectorError, TimeoutError, ClientError) as error:
         raise CannotConnect from error
     except AuthenticationError as error:
+        _LOGGER.error("WaterSmart authentication failed: %s", error)
         raise InvalidAuth from error
 
     if not account_number:

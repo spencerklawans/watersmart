@@ -41,7 +41,8 @@ class AuthenticationError(Exception):
 
     def __init__(self, errors: list[str] | None = None) -> None:
         """Initialize."""
-        self._errors = errors
+        self._errors = errors or []
+        super().__init__("; ".join(self._errors) if self._errors else "authentication failed")
 
 
 class InvalidAccountNumberError(Exception):
@@ -211,7 +212,25 @@ class WaterSmartClient:
         )
 
         response_text = await response.text()
-        return BeautifulSoup(response_text, "html.parser")
+        if response.status >= 400:
+            raise AuthenticationError(
+                [
+                    "failed to submit verification code to WaterSmart; "
+                    f"received status {response.status}",
+                ]
+            )
+
+        response_soup = BeautifulSoup(response_text, "html.parser")
+
+        if _requires_verification(response_soup):
+            raise AuthenticationError(
+                [
+                    "verification still required after submitting code; "
+                    "failed to complete WaterSmart verification",
+                ]
+            )
+
+        return response_soup
 
     async def _get_verification_code(self) -> str:
         """Retrieve the verification code from email."""
@@ -220,7 +239,14 @@ class WaterSmartClient:
             raise AuthenticationError(["verification required but IMAP is not configured"])
 
         await asyncio.sleep(30)
-        return await asyncio.to_thread(self._fetch_code_from_imap)
+        try:
+            return await asyncio.to_thread(self._fetch_code_from_imap)
+        except AuthenticationError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            raise AuthenticationError(
+                [f"unexpected error while retrieving verification code: {error}"]
+            ) from error
 
     def _fetch_code_from_imap(self) -> str:
         """Fetch verification code from IMAP."""
@@ -233,10 +259,24 @@ class WaterSmartClient:
 
         try:
             imap = imaplib.IMAP4_SSL(imap_config["host"], imap_config["port"])
-            imap.login(imap_config["username"], imap_config["password"])
-            imap.select(imap_config["folder"])
+            try:
+                imap.login(imap_config["username"], imap_config["password"])
+            except imaplib.IMAP4.error as error:
+                raise AuthenticationError(
+                    [f"failed to login to IMAP server: {error}"]
+                ) from error
 
-            _, message_numbers = imap.search(None, 'SUBJECT "Verification"')
+            status, _ = imap.select(imap_config["folder"])
+            if status != "OK":
+                raise AuthenticationError(
+                    [f"failed to select IMAP folder '{imap_config['folder']}': {status}"]
+                )
+
+            status, message_numbers = imap.search(None, 'SUBJECT "Verification"')
+            if status != "OK":
+                raise AuthenticationError(
+                    [f"failed to search IMAP folder for verification email: {status}"]
+                )
             if not message_numbers or not message_numbers[0]:
                 raise AuthenticationError(["no verification email found"])
 
@@ -244,7 +284,12 @@ class WaterSmartClient:
             status, message_parts = imap.fetch(latest_email_id, "(RFC822)")
 
             if status != "OK" or not message_parts:
-                raise AuthenticationError(["unable to fetch verification email"])
+                raise AuthenticationError(
+                    [
+                        "unable to fetch verification email; "
+                        "download from IMAP returned no data",
+                    ]
+                )
 
             email_body = message_parts[0][1]
             message = message_from_bytes(email_body)

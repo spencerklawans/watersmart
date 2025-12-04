@@ -1,5 +1,6 @@
 """Test client."""
 
+import imaplib
 from unittest.mock import AsyncMock, call, patch
 
 from homeassistant.core import HomeAssistant
@@ -90,8 +91,10 @@ async def test_login_with_verification(
     hass: HomeAssistant, mock_aiohttp_session, fixture_loader
 ):
     first_response = AsyncMock()
+    first_response.status = 200
     first_response.text.return_value = fixture_loader.login_verification_required_html
     second_response = AsyncMock()
+    second_response.status = 200
     second_response.text.return_value = fixture_loader.login_success_html
     mock_aiohttp_session.post.side_effect = [first_response, second_response]
 
@@ -161,8 +164,10 @@ async def test_login_with_verification_text_prompt(
     hass: HomeAssistant, mock_aiohttp_session, fixture_loader
 ):
     first_response = AsyncMock()
+    first_response.status = 200
     first_response.text.return_value = fixture_loader.login_verification_prompt_text_html
     second_response = AsyncMock()
+    second_response.status = 200
     second_response.text.return_value = fixture_loader.login_success_html
     mock_aiohttp_session.post.side_effect = [first_response, second_response]
 
@@ -211,6 +216,46 @@ async def test_login_with_verification_text_prompt(
     )
 
 
+async def test_verification_submission_failure(
+    hass: HomeAssistant, mock_aiohttp_session, fixture_loader
+):
+    first_response = AsyncMock()
+    first_response.status = 200
+    first_response.text.return_value = fixture_loader.login_verification_required_html
+    second_response = AsyncMock()
+    second_response.status = 200
+    second_response.text.return_value = fixture_loader.login_verification_required_html
+    mock_aiohttp_session.post.side_effect = [first_response, second_response]
+
+    with (
+        patch(
+            "custom_components.watersmart.client.asyncio.to_thread",
+            new=AsyncMock(return_value="123456"),
+        ),
+        patch(
+            "custom_components.watersmart.client.asyncio.sleep",
+            new=AsyncMock(),
+        ),
+    ):
+        client = WaterSmartClient(
+            hostname="test",
+            username="test@home-assistant.io",
+            password="Passw0rd",  # noqa: S106
+            imap_config={
+                "host": "imap.test.com",
+                "username": "imapuser",
+                "password": "imappass",  # noqa: S106
+                "port": 993,
+                "folder": "INBOX",
+            },
+        )
+
+        with pytest.raises(AuthenticationError) as error:
+            await client.async_get_account_number()
+
+    assert "verification still required" in str(error.value)
+
+
 async def test_login_is_preserved(
     hass: HomeAssistant, mock_aiohttp_session, fixture_loader
 ):
@@ -243,6 +288,30 @@ async def test_login_failure(hass: HomeAssistant, mock_aiohttp_session, fixture_
 
     with pytest.raises(AuthenticationError):
         await client.async_get_account_number()
+
+
+def test_imap_login_failure():
+    client = WaterSmartClient(
+        hostname="test",
+        username="test@home-assistant.io",
+        password="Passw0rd",  # noqa: S106
+        imap_config={
+            "host": "imap.test.com",
+            "username": "imapuser",
+            "password": "imappass",  # noqa: S106
+            "port": 993,
+            "folder": "INBOX",
+        },
+    )
+
+    with patch(
+        "custom_components.watersmart.client.imaplib.IMAP4_SSL",
+        side_effect=imaplib.IMAP4.error("bad login"),
+    ):
+        with pytest.raises(AuthenticationError) as error:
+            client._fetch_code_from_imap()
+
+    assert "login to IMAP" in str(error.value)
 
 
 async def test_structure_change_failure(
