@@ -30,6 +30,8 @@ async def test_successful_flow(hass: HomeAssistant, mock_watersmart_client):
                 "host": "test",
                 "username": "test@home-assistant.io",
                 "password": "Passw0rd",
+                "imap_port": 993,
+                "imap_folder": "INBOX",
             },
         )
 
@@ -39,6 +41,8 @@ async def test_successful_flow(hass: HomeAssistant, mock_watersmart_client):
         "host": "test",
         "username": "test@home-assistant.io",
         "password": "Passw0rd",
+        "imap_port": 993,
+        "imap_folder": "INBOX",
     }
     await hass.async_block_till_done()
     assert len(mock_setup_entry.mock_calls) == 1

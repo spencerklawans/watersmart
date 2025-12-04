@@ -1,6 +1,6 @@
 """Test client."""
 
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, call, patch
 
 from homeassistant.core import HomeAssistant
 import pytest
@@ -84,6 +84,70 @@ async def test_login_success_with_refreshtoken(
             ),
         ]
     )
+
+
+async def test_login_with_verification(
+    hass: HomeAssistant, mock_aiohttp_session, fixture_loader
+):
+    first_response = AsyncMock()
+    first_response.text.return_value = fixture_loader.login_verification_required_html
+    second_response = AsyncMock()
+    second_response.text.return_value = fixture_loader.login_success_html
+    mock_aiohttp_session.post.side_effect = [first_response, second_response]
+
+    with patch(
+        "custom_components.watersmart.client.asyncio.to_thread",
+        new=AsyncMock(return_value="654321"),
+    ) as mock_to_thread:
+        client = WaterSmartClient(
+            hostname="test",
+            username="test@home-assistant.io",
+            password="Passw0rd",  # noqa: S106
+            imap_config={
+                "host": "imap.test.com",
+                "username": "imapuser",
+                "password": "imappass",  # noqa: S106
+                "port": 993,
+                "folder": "INBOX",
+            },
+        )
+
+        await client.async_get_account_number()
+
+    mock_to_thread.assert_called_once()
+    mock_aiohttp_session.post.assert_has_calls(
+        [
+            call(
+                "https://test.watersmart.com/index.php/welcome/login?forceEmail=1",
+                data={
+                    "token": "",
+                    "email": "test@home-assistant.io",
+                    "password": "Passw0rd",
+                },
+            ),
+            call(
+                "https://test.watersmart.com/index.php/welcome/verify",
+                data={"verificationCode": "654321"},
+            ),
+        ]
+    )
+
+
+async def test_login_requires_verification_without_imap(
+    hass: HomeAssistant, mock_aiohttp_session, fixture_loader
+):
+    mock_aiohttp_session.post.return_value.text.return_value = (
+        fixture_loader.login_verification_required_html
+    )
+
+    client = WaterSmartClient(
+        hostname="test",
+        username="test@home-assistant.io",
+        password="Passw0rd",  # noqa: S106
+    )
+
+    with pytest.raises(AuthenticationError):
+        await client.async_get_account_number()
 
 
 async def test_login_is_preserved(
