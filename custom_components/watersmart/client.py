@@ -200,7 +200,7 @@ class WaterSmartClient:
     async def _verify_if_needed(self, soup: BeautifulSoup) -> BeautifulSoup:
         """Complete verification when required."""
 
-        if not soup.find("input", {"name": "verificationCode"}):
+        if not _requires_verification(soup):
             return soup
 
         verification_code = await self._get_verification_code()
@@ -219,6 +219,7 @@ class WaterSmartClient:
         if not self._imap_config:
             raise AuthenticationError(["verification required but IMAP is not configured"])
 
+        await asyncio.sleep(30)
         return await asyncio.to_thread(self._fetch_code_from_imap)
 
     def _fetch_code_from_imap(self) -> str:
@@ -264,6 +265,20 @@ def _assert_node(node: PageElement, message: str) -> PageElement:
     if not node:
         raise ScrapeError(message)
     return node
+
+
+def _requires_verification(soup: BeautifulSoup) -> bool:
+    """Return True when the login response indicates verification is needed."""
+
+    if soup.find("input", {"name": "verificationCode"}):
+        return True
+
+    verification_prompt = soup.find(
+        string=lambda text: isinstance(text, str)
+        and "verify your account" in text.lower()
+    )
+
+    return verification_prompt is not None
 
 
 def _extract_verification_code(message: Message) -> str | None:
