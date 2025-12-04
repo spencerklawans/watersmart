@@ -8,10 +8,14 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 
 from .coordinator import WaterSmartUpdateCoordinator
+from .const import CONF_IMAP_HOST, CONF_IMAP_PASSWORD, CONF_IMAP_USERNAME
 
 TO_REDACT = {
     CONF_USERNAME,
     CONF_PASSWORD,
+    CONF_IMAP_HOST,
+    CONF_IMAP_USERNAME,
+    CONF_IMAP_PASSWORD,
 }
 
 

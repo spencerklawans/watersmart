@@ -14,7 +14,16 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import voluptuous as vol
 
 from .client import AuthenticationError, WaterSmartClient
-from .const import DOMAIN
+from .const import (
+    CONF_IMAP_FOLDER,
+    CONF_IMAP_HOST,
+    CONF_IMAP_PASSWORD,
+    CONF_IMAP_PORT,
+    CONF_IMAP_USERNAME,
+    DEFAULT_IMAP_FOLDER,
+    DEFAULT_IMAP_PORT,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,6 +32,11 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_HOST): str,
         vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): str,
+        vol.Optional(CONF_IMAP_HOST): str,
+        vol.Optional(CONF_IMAP_USERNAME): str,
+        vol.Optional(CONF_IMAP_PASSWORD): str,
+        vol.Optional(CONF_IMAP_PORT, default=DEFAULT_IMAP_PORT): int,
+        vol.Optional(CONF_IMAP_FOLDER, default=DEFAULT_IMAP_FOLDER): str,
     }
 )
 
@@ -42,7 +56,22 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 
     session = async_get_clientsession(hass)
     client = WaterSmartClient(
-        data[CONF_HOST], data[CONF_USERNAME], data[CONF_PASSWORD], session=session
+        data[CONF_HOST],
+        data[CONF_USERNAME],
+        data[CONF_PASSWORD],
+        session=session,
+        imap_config=
+        {
+            "host": data.get(CONF_IMAP_HOST),
+            "username": data.get(CONF_IMAP_USERNAME),
+            "password": data.get(CONF_IMAP_PASSWORD),
+            "port": data.get(CONF_IMAP_PORT, DEFAULT_IMAP_PORT),
+            "folder": data.get(CONF_IMAP_FOLDER, DEFAULT_IMAP_FOLDER),
+        }
+        if data.get(CONF_IMAP_HOST)
+        and data.get(CONF_IMAP_USERNAME)
+        and data.get(CONF_IMAP_PASSWORD)
+        else None,
     )
 
     try:
@@ -51,6 +80,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     except (ClientConnectorError, TimeoutError, ClientError) as error:
         raise CannotConnect from error
     except AuthenticationError as error:
+        _LOGGER.error("WaterSmart authentication failed: %s", error)
         raise InvalidAuth from error
 
     if not account_number:

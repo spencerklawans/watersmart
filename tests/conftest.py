@@ -2,8 +2,9 @@
 
 from collections.abc import Generator
 import json
+import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 from unittest.mock import AsyncMock, PropertyMock, patch
 
 from homeassistant.core import HomeAssistant
@@ -170,6 +171,8 @@ def mock_config_entry() -> MockConfigEntry:
             "host": "test",
             "username": "test@home-assistant.io",
             "password": "Passw0rd",
+            "imap_port": 993,
+            "imap_folder": "INBOX",
         },
     )
 

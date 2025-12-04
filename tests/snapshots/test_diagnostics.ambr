@@ -63,6 +63,8 @@
     'entry': dict({
       'data': dict({
         'host': 'test',
+        'imap_folder': 'INBOX',
+        'imap_port': 993,
         'password': '**REDACTED**',
         'username': '**REDACTED**',
       }),

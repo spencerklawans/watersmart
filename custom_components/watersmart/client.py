@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 import datetime as dt
+from email import message_from_bytes
+from email.message import Message
 import functools
+import imaplib
 import re
 from typing import Any, TypedDict, cast
 
@@ -14,6 +18,9 @@ from bs4 import BeautifulSoup, PageElement
 # Account number format will vary between municipality, so
 # match on a string of non-whitespace characters.
 ACCOUNT_NUMBER_RE = re.compile(r"^\S+$")
+VERIFICATION_CODE_RE = re.compile(
+    r"Enter this verification code to gain access:\s*(?P<code>\d{6})"
+)
 
 
 def _authenticated[F: Callable[..., Any], ReturnT](func: F) -> F:
@@ -34,7 +41,8 @@ class AuthenticationError(Exception):
 
     def __init__(self, errors: list[str] | None = None) -> None:
         """Initialize."""
-        self._errors = errors
+        self._errors = errors or []
+        super().__init__("; ".join(self._errors) if self._errors else "authentication failed")
 
 
 class InvalidAccountNumberError(Exception):
@@ -66,6 +74,16 @@ class UsageRecord(TypedDict):
     flags: None
 
 
+class ImapConfig(TypedDict):
+    """Configuration for accessing IMAP."""
+
+    host: str
+    username: str
+    password: str
+    port: int
+    folder: str
+
+
 class WaterSmartClient:
     """WaterSmart Client."""
 
@@ -75,6 +93,7 @@ class WaterSmartClient:
         username: str,
         password: str,
         session: aiohttp.ClientSession = None,
+        imap_config: ImapConfig | None = None,
     ) -> None:
         """Initialize."""
         self._hostname = hostname
@@ -83,6 +102,7 @@ class WaterSmartClient:
         self._session = session or aiohttp.ClientSession()
         self._account_number: str | None = None
         self._authenticated_at: dt.datetime | None = None
+        self._imap_config = imap_config
 
     @_authenticated
     async def async_get_account_number(self) -> str | None:
@@ -152,6 +172,8 @@ class WaterSmartClient:
             login_response_text = await login_response.text()
             soup = BeautifulSoup(login_response_text, "html.parser")
 
+        soup = await self._verify_if_needed(soup)
+
         errors = [error.text.strip() for error in soup.select(".error-message")]
         errors = [error for error in errors if error]
 
@@ -176,8 +198,151 @@ class WaterSmartClient:
 
         self._account_number = account_number
 
+    async def _verify_if_needed(self, soup: BeautifulSoup) -> BeautifulSoup:
+        """Complete verification when required."""
+
+        if not _requires_verification(soup):
+            return soup
+
+        verification_code = await self._get_verification_code()
+
+        response = await self._session.post(
+            f"https://{self._hostname}.watersmart.com/index.php/welcome/verify",
+            data={"verificationCode": verification_code},
+        )
+
+        response_text = await response.text()
+        if response.status >= 400:
+            raise AuthenticationError(
+                [
+                    "failed to submit verification code to WaterSmart; "
+                    f"received status {response.status}",
+                ]
+            )
+
+        response_soup = BeautifulSoup(response_text, "html.parser")
+
+        if _requires_verification(response_soup):
+            raise AuthenticationError(
+                [
+                    "verification still required after submitting code; "
+                    "failed to complete WaterSmart verification",
+                ]
+            )
+
+        return response_soup
+
+    async def _get_verification_code(self) -> str:
+        """Retrieve the verification code from email."""
+
+        if not self._imap_config:
+            raise AuthenticationError(["verification required but IMAP is not configured"])
+
+        await asyncio.sleep(30)
+        try:
+            return await asyncio.to_thread(self._fetch_code_from_imap)
+        except AuthenticationError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            raise AuthenticationError(
+                [f"unexpected error while retrieving verification code: {error}"]
+            ) from error
+
+    def _fetch_code_from_imap(self) -> str:
+        """Fetch verification code from IMAP."""
+
+        if not self._imap_config:
+            raise AuthenticationError(["verification required but IMAP is not configured"])
+
+        imap_config = self._imap_config
+        imap = None
+
+        try:
+            imap = imaplib.IMAP4_SSL(imap_config["host"], imap_config["port"])
+            try:
+                imap.login(imap_config["username"], imap_config["password"])
+            except imaplib.IMAP4.error as error:
+                raise AuthenticationError(
+                    [f"failed to login to IMAP server: {error}"]
+                ) from error
+
+            status, _ = imap.select(imap_config["folder"])
+            if status != "OK":
+                raise AuthenticationError(
+                    [f"failed to select IMAP folder '{imap_config['folder']}': {status}"]
+                )
+
+            status, message_numbers = imap.search(None, 'SUBJECT "Verification"')
+            if status != "OK":
+                raise AuthenticationError(
+                    [f"failed to search IMAP folder for verification email: {status}"]
+                )
+            if not message_numbers or not message_numbers[0]:
+                raise AuthenticationError(["no verification email found"])
+
+            latest_email_id = message_numbers[0].split()[-1]
+            status, message_parts = imap.fetch(latest_email_id, "(RFC822)")
+
+            if status != "OK" or not message_parts:
+                raise AuthenticationError(
+                    [
+                        "unable to fetch verification email; "
+                        "download from IMAP returned no data",
+                    ]
+                )
+
+            email_body = message_parts[0][1]
+            message = message_from_bytes(email_body)
+            code = _extract_verification_code(message)
+            if not code:
+                raise AuthenticationError(["verification code not found in email"])
+
+            return code
+        finally:
+            if imap is not None:
+                try:
+                    imap.logout()
+                except Exception:  # noqa: BLE001
+                    imap.close()
+
 
 def _assert_node(node: PageElement, message: str) -> PageElement:
     if not node:
         raise ScrapeError(message)
     return node
+
+
+def _requires_verification(soup: BeautifulSoup) -> bool:
+    """Return True when the login response indicates verification is needed."""
+
+    if soup.find("input", {"name": "verificationCode"}):
+        return True
+
+    verification_prompt = soup.find(
+        string=lambda text: isinstance(text, str)
+        and "verify your account" in text.lower()
+    )
+
+    return verification_prompt is not None
+
+
+def _extract_verification_code(message: Message) -> str | None:
+    """Extract verification code from an email message."""
+
+    for part in message.walk():
+        if part.get_content_maintype() == "multipart":
+            continue
+
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            continue
+
+        try:
+            body = payload.decode(part.get_content_charset() or "utf-8")
+        except (LookupError, UnicodeDecodeError):
+            continue
+
+        if match := VERIFICATION_CODE_RE.search(body):
+            return match.group("code")
+
+    return None
